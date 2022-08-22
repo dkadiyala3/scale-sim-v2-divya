@@ -73,6 +73,16 @@ class systolic_compute_ws:
         self.row_fold = math.ceil(self.Sr / self.arr_row)
         self.col_fold = math.ceil(self.Sc / self.arr_col)
 
+        print("self.Sr (K-dim) :", self.Sr)
+        print("self.Sc (N-dim) :", self.Sc)
+        print("self.T  (M-dim) :", self.T)
+        print("\n")
+        print("array_row: ", self.arr_row)
+        print("array_col: ", self.arr_col)
+        print("row_fold:  ", self.row_fold)
+        print("col_fold:  ", self.col_fold)
+        print("\n")
+
         self.params_set_flag = True
 
     #
@@ -178,43 +188,59 @@ class systolic_compute_ws:
     def create_ifmap_demand_mat(self):
         assert self.params_set_flag, 'Parameters are not set'
 
+        # Cycles required to fill the weights in WS mode.
         inter_fold_gap_prefix = self.arr_row
         inter_fold_gap_prefix_mat = np.ones((inter_fold_gap_prefix, self.arr_row)) * -1
+        print("inter_fold_gap_prefix_mat.shape: ", inter_fold_gap_prefix_mat.shape)
 
-        inter_fold_gap_suffix = self.arr_row + self.arr_col - 2
-        #The last input needs self.arr_row - 1 cycles to reach the last column of PE array and then self.arr_col - 1 cycles to reduce along the last column.
 
+        # The last input needs self.arr_row - 1 cycles to reduce the last column.
+        inter_fold_gap_suffix = self.arr_col - 1
         inter_fold_gap_suffix_mat = np.ones((inter_fold_gap_suffix, self.arr_row)) * -1
+        print("inter_fold_gap_suffix_mat", inter_fold_gap_suffix_mat.shape)
 
+        # For each column fold and row fold compute demand matrices.
         for fc in range(self.col_fold):
             for fr in range(self.row_fold):
                 col_start_id = fr * self.arr_row
                 col_end_idx = min(col_start_id + self.arr_row, self.Sr)
                 delta = self.arr_row - (col_end_idx - col_start_id)
 
+                print("fc:", fc, " fr: ",fr," col_start_id: ",col_start_id, "col_end_idx: ",
+                        col_end_idx, "delta: ",delta)
+
                 # Indexing the cols with row start and row end idx are correct
                 # See the comment on ifmap_prefetch generation
                 this_fold_demand = self.ifmap_op_mat[:,col_start_id: col_end_idx]
+                print("this_fold_demand", this_fold_demand.shape)
+
                 self.ifmap_reads += this_fold_demand.shape[0] * this_fold_demand.shape[1]
 
                 # Take into account under utilization
                 if delta > 0:
                     null_req_mat = np.ones((self.T, delta)) * -1
                     this_fold_demand = np.concatenate((this_fold_demand, null_req_mat), axis=1)
+                    print("After Underutilization: ", this_fold_demand.shape)
+
+                # Add skew to the IFMAP demand matrix to reflect systolic pipeline fill
+                this_fold_demand =skew_matrix(this_fold_demand)
+                print("After skew : ",this_fold_demand.shape)
+
+                # Account for the cycles for input to traverse systolic array
+                this_fold_demand = np.concatenate((this_fold_demand, inter_fold_gap_suffix_mat), axis=0)
+                print("after adding cycles to traverse: ", this_fold_demand.shape)
 
                 # Account for the cycles for weights to load
                 this_fold_demand = np.concatenate((inter_fold_gap_prefix_mat, this_fold_demand), axis=0)
-
-                # Account for the cycles for final output to drain out
-                this_fold_demand = np.concatenate((this_fold_demand, inter_fold_gap_suffix_mat), axis=0)
-
-                # Add skew to the IFMAP demand matrix to reflect systolic pipeline fill
-                this_fold_demand = skew_matrix(this_fold_demand)
+                print("After adding cycles for loading weights: ",this_fold_demand.shape)
 
                 if fr == 0 and fc == 0:
                     self.ifmap_demand_matrix = this_fold_demand
                 else:
                     self.ifmap_demand_matrix = np.concatenate((self.ifmap_demand_matrix, this_fold_demand), axis=0)
+                print("ifmap_demand_matrix: ", self.ifmap_demand_matrix.shape)
+        print("\n")
+
     # END of IFMAP demand generation
 
     #
